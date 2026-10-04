@@ -4,6 +4,8 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, LogIn } from 'lucide-react';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase';
 import { useAuth } from '@/components/providers/AuthProvider';
 import { useToast } from '@/components/providers/ToastProvider';
 import { Button, Field, Input, PageLoader } from '@/components/ui';
@@ -16,7 +18,10 @@ function friendlyError(code: string) {
     return 'Too many attempts. Please wait a few minutes and try again.';
   if (code.includes('invalid-email')) return 'That email address does not look valid.';
   if (code.includes('network')) return 'Network problem. Check your connection and try again.';
-  return 'Could not sign you in. Please try again.';
+  if (code.includes('configuration-not-found') || code.includes('operation-not-allowed'))
+    return 'Email/Password sign-in is not enabled in Firebase (Authentication → Sign-in method).';
+  if (code.includes('api-key')) return 'The Firebase API key is invalid or restricted.';
+  return 'Could not sign you in. Please try again.' + (code ? ` (${code})` : '');
 }
 
 function LoginForm() {
@@ -38,7 +43,17 @@ function LoginForm() {
     try {
       await signIn(email.trim(), password);
       toast('Welcome back!', 'success');
-      router.push(next);
+      // Admins land on the admin dashboard unless a specific page was requested.
+      let dest = next;
+      if (!params.get('next') && auth.currentUser) {
+        try {
+          const snap = await getDoc(doc(db, 'users', auth.currentUser.uid));
+          if (snap.data()?.role === 'admin') dest = '/admin';
+        } catch {
+          // Profile unreadable (e.g. rules not published) — fall back to /dashboard.
+        }
+      }
+      router.push(dest);
     } catch (err) {
       const code = err instanceof Error ? err.message : '';
       toast(friendlyError(code), 'error');
@@ -68,6 +83,15 @@ function LoginForm() {
       <p className="mt-2 text-[14px] text-slate-500">
         Access your courses, lessons and payment status.
       </p>
+
+      {params.get('registered') && (
+        <p
+          role="status"
+          className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13.5px] font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+        >
+          Your account was created successfully. Please log in.
+        </p>
+      )}
 
       <form onSubmit={onSubmit} className="mt-8 space-y-4">
         <Field label="Email Address" required>

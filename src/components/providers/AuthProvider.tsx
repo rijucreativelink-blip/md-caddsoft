@@ -86,6 +86,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setProfile({ uid: snap.id, ...(snap.data() as Omit<UserProfile, 'uid'>) });
       }
       setLoading(false);
+    }, (err) => {
+      // Expected for a moment after sign-out (the listener outlives the auth
+      // token) or when Firestore rules are not published yet.
+      if (err.code !== 'permission-denied') console.warn('Profile listener:', err.code);
+      setLoading(false);
     });
     return () => unsub();
   }, [user]);

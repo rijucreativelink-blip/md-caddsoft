@@ -12,9 +12,30 @@ import {
   where,
   type QueryConstraint,
   type DocumentData,
+  type DocumentReference,
+  type DocumentSnapshot,
+  type Query,
+  type QuerySnapshot,
+  type FirestoreError,
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '@/lib/firebase';
 import type { Course, Enrollment, Lesson, Payment, PaymentSettings, UserProfile } from '@/lib/types';
+
+
+/**
+ * onSnapshot with an error handler, so a rejected listener (signed out,
+ * not an admin, rules not yet published) logs quietly instead of throwing
+ * an uncaught error.
+ */
+function listen(ref: Query<DocumentData>, next: (snap: QuerySnapshot<DocumentData>) => void): () => void;
+function listen(ref: DocumentReference<DocumentData>, next: (snap: DocumentSnapshot<DocumentData>) => void): () => void;
+function listen(ref: Query<DocumentData> | DocumentReference<DocumentData>, next: (snap: never) => void) {
+  const onError = (err: FirestoreError) => {
+    if (err.code !== 'permission-denied') console.warn('Firestore listener:', err.code);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (onSnapshot as any)(ref, next, onError) as () => void;
+}
 
 /** Firestore Timestamp | number | undefined -> epoch millis */
 export function toMillis(value: unknown): number {
@@ -56,7 +77,7 @@ export function watchCourses(
   if (opts.publishedOnly) constraints.push(where('published', '==', true));
   constraints.push(orderBy('createdAt', 'desc'));
 
-  return onSnapshot(query(collection(db, 'courses'), ...constraints), (snap) => {
+  return listen(query(collection(db, 'courses'), ...constraints), (snap) => {
     cb(snap.docs.map((d) => mapDoc<Course>(d.id, d.data())));
   });
 }
@@ -83,7 +104,7 @@ export function watchLessons(courseId: string, cb: (lessons: Lesson[]) => void) 
     cb([]);
     return () => undefined;
   }
-  return onSnapshot(
+  return listen(
     query(collection(db, 'courses', courseId, 'lessons'), orderBy('order', 'asc')),
     (snap) => cb(snap.docs.map((d) => mapDoc<Lesson>(d.id, d.data()))),
   );
@@ -100,7 +121,7 @@ export async function fetchLessons(courseId: string): Promise<Lesson[]> {
 /* -------------------------------------------------------------- Enrollments */
 
 export function watchMyEnrollments(userId: string, cb: (list: Enrollment[]) => void) {
-  return onSnapshot(
+  return listen(
     query(collection(db, 'enrollments'), where('userId', '==', userId)),
     (snap) =>
       cb(
@@ -121,7 +142,7 @@ export async function isEnrolled(userId: string, courseId: string) {
 /* ----------------------------------------------------------------- Payments */
 
 export function watchMyPayments(userId: string, cb: (list: Payment[]) => void) {
-  return onSnapshot(
+  return listen(
     query(collection(db, 'payments'), where('userId', '==', userId)),
     (snap) => {
       const list = snap.docs.map((d) => mapDoc<Payment>(d.id, d.data()));
@@ -132,7 +153,7 @@ export function watchMyPayments(userId: string, cb: (list: Payment[]) => void) {
 }
 
 export function watchAllPayments(cb: (list: Payment[]) => void) {
-  return onSnapshot(query(collection(db, 'payments'), orderBy('createdAt', 'desc')), (snap) =>
+  return listen(query(collection(db, 'payments'), orderBy('createdAt', 'desc')), (snap) =>
     cb(snap.docs.map((d) => mapDoc<Payment>(d.id, d.data()))),
   );
 }
@@ -153,7 +174,7 @@ export function watchPaymentSettings(cb: (settings: PaymentSettings) => void) {
     cb(DEFAULT_PAYMENT_SETTINGS);
     return () => undefined;
   }
-  return onSnapshot(doc(db, 'settings', 'payment'), (snap) => {
+  return listen(doc(db, 'settings', 'payment'), (snap) => {
     cb(
       snap.exists()
         ? { ...DEFAULT_PAYMENT_SETTINGS, ...(snap.data() as Partial<PaymentSettings>) }
@@ -173,7 +194,7 @@ export async function fetchPaymentSettings(): Promise<PaymentSettings> {
 /* -------------------------------------------------------------------- Users */
 
 export function watchStudents(cb: (list: UserProfile[]) => void) {
-  return onSnapshot(collection(db, 'users'), (snap) => {
+  return listen(collection(db, 'users'), (snap) => {
     const list = snap.docs.map((d) => ({
       uid: d.id,
       ...d.data(),

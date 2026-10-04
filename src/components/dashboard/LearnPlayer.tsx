@@ -38,7 +38,7 @@ export function LearnPlayer({ courseId }: { courseId: string }) {
     if (!user) return;
     return onSnapshot(doc(db, 'enrollments', `${user.uid}_${courseId}`), (snap) => {
       setEnrollment(snap.exists() ? ({ id: snap.id, ...snap.data() } as Enrollment) : null);
-    });
+    }, () => setEnrollment(null));
   }, [user, courseId]);
 
   const progress = enrollment?.progress ?? {};

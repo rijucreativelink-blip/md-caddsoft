@@ -4,20 +4,38 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, UserPlus } from 'lucide-react';
+import { FirebaseError } from 'firebase/app';
 import { useAuth } from '@/components/providers/AuthProvider';
 import { useToast } from '@/components/providers/ToastProvider';
 import { Button, Field, Input, PageLoader } from '@/components/ui';
 
-function friendlyError(code: string) {
-  if (code.includes('email-already-in-use'))
-    return 'An account with that email already exists. Try logging in.';
-  if (code.includes('weak-password')) return 'Password is too weak — use at least 6 characters.';
-  if (code.includes('invalid-email')) return 'That email address does not look valid.';
-  return 'Could not create your account. Please try again.';
+/**
+ * Maps a Firebase error to a message for the form. Only the error *code* is
+ * ever shown — never the request payload, so the password cannot leak.
+ */
+function registerErrorMessage(err: unknown): string {
+  const code =
+    err instanceof FirebaseError
+      ? err.code
+      : typeof err === 'object' && err && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : '';
+  const raw = err instanceof Error ? err.message : '';
+
+  if (code === 'auth/email-already-in-use' || raw.includes('EMAIL_EXISTS'))
+    return 'This email is already registered. Please login instead.';
+  if (code === 'auth/invalid-email') return 'Please enter a valid email address.';
+  if (code === 'auth/weak-password') return 'Password must be at least 6 characters.';
+  if (code === 'auth/operation-not-allowed' || raw.includes('OPERATION_NOT_ALLOWED'))
+    return 'Email/password registration is not enabled in Firebase.';
+
+  return code
+    ? `Registration failed. Firebase error code: ${code}`
+    : 'Registration failed. Please try again.';
 }
 
 function RegisterForm() {
-  const { signUp } = useAuth();
+  const { signUp, logout } = useAuth();
   const router = useRouter();
   const params = useSearchParams();
   const toast = useToast();
@@ -25,6 +43,7 @@ function RegisterForm() {
   const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', confirm: '' });
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const next = params.get('next') || '/dashboard';
 
@@ -33,13 +52,14 @@ function RegisterForm() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
 
     if (form.password.length < 6) {
-      toast('Password must be at least 6 characters.', 'error');
+      setError('Password must be at least 6 characters.');
       return;
     }
     if (form.password !== form.confirm) {
-      toast('The two passwords do not match.', 'error');
+      setError('The two passwords do not match.');
       return;
     }
 
@@ -51,10 +71,15 @@ function RegisterForm() {
         password: form.password,
         phone: form.phone.trim(),
       });
-      toast('Account created. Welcome to CADD Software!', 'success');
-      router.push(next);
+      // Firebase signs the new user in automatically; sign out so they log in
+      // themselves on the login page.
+      await logout();
+      toast('Account created successfully! Please log in.', 'success');
+      const qs = new URLSearchParams({ registered: '1' });
+      if (params.get('next')) qs.set('next', next);
+      router.push(`/login?${qs.toString()}`);
     } catch (err) {
-      toast(friendlyError(err instanceof Error ? err.message : ''), 'error');
+      setError(registerErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -132,6 +157,16 @@ function RegisterForm() {
         <Button type="submit" loading={busy} size="lg" className="w-full">
           {!busy && <UserPlus size={16} />} Create account
         </Button>
+
+        {error && (
+          <p
+            role="alert"
+            aria-live="assertive"
+            className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] font-medium text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
+          >
+            {error}
+          </p>
+        )}
       </form>
 
       <p className="mt-6 text-center text-[13.5px] text-slate-500">
