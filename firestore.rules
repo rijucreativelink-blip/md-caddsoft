@@ -1,0 +1,126 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    /* ------------------------------------------------------------- users */
+    match /users/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+
+      // A new account may only create its own doc, as a student.
+      allow create: if isSelf(uid)
+        && request.resource.data.role == 'student'
+        && request.resource.data.uid == uid;
+
+      // A student may edit their own profile but never their role or blocked flag.
+      allow update: if (isSelf(uid)
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.get('blocked', false) == resource.data.get('blocked', false))
+        || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    /* ----------------------------------------------------------- courses */
+    match /courses/{courseId} {
+      // Published courses are public; drafts are admin-only.
+      allow read: if resource.data.published == true || isAdmin();
+      allow create, update, delete: if isAdmin();
+
+      match /lessons/{lessonId} {
+        // A lesson is readable when the viewer is enrolled, when it is a free
+        // preview, or when the viewer is an admin.
+        allow read: if isAdmin()
+          || resource.data.get('isFreePreview', false) == true
+          || (signedIn() && exists(
+               /databases/$(database)/documents/enrollments/$(request.auth.uid + '_' + courseId)
+             )
+             && get(
+               /databases/$(database)/documents/enrollments/$(request.auth.uid + '_' + courseId)
+             ).data.active == true);
+
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    /* ---------------------------------------------------------- payments */
+    match /payments/{paymentId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+
+      // A student submits their own proof, always as 'pending', at the
+      // deterministic id "<uid>_<courseId>".
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && paymentId == request.auth.uid + '_' + request.resource.data.courseId;
+
+      // A student may only resubmit after a rejection; status stays 'pending'.
+      allow update: if isAdmin()
+        || (signedIn()
+            && resource.data.userId == request.auth.uid
+            && resource.data.status == 'rejected'
+            && request.resource.data.status == 'pending');
+
+      allow delete: if isAdmin();
+    }
+
+    /* ------------------------------------------------------- enrollments */
+    match /enrollments/{enrollmentId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+
+      // Only an admin grants access (after verifying the payment).
+      allow create: if isAdmin();
+
+      // A student may write nothing but their own lesson progress.
+      allow update: if isAdmin()
+        || (signedIn()
+            && resource.data.userId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['progress']));
+
+      allow delete: if isAdmin();
+    }
+
+    /* ---------------------------------------------------------- settings */
+    match /settings/{docId} {
+      allow read: if true;          // checkout needs the QR / UPI id
+      allow write: if isAdmin();
+    }
+
+    /* ------------------------------------------------------ certificates */
+    match /certificates/{registrationNo} {
+      allow read: if true;          // public verification page
+      allow write: if isAdmin();
+    }
+
+    /* --------------------------------------------------------- enquiries */
+    match /enquiries/{docId} {
+      allow create: if true;        // public contact / career forms
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /franchiseApplications/{docId} {
+      allow create: if true;        // public franchise form
+      allow read, update, delete: if isAdmin();
+    }
+
+    /* Everything else is closed. */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
